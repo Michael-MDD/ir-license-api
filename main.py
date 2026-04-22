@@ -184,4 +184,3 @@ def delete_license(req: DeleteLicenseRequest):
         "message": "License deleted successfully.",
         "license_key": key
     }
-}
