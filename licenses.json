@@ -1,0 +1,12 @@
+{
+  "IR-ONLINE-TEST-001": {
+    "is_active": true,
+    "expiry_date": "2026-12-31",
+    "license_type": "PRO"
+  },
+  "IR-ONLINE-TEST-002": {
+    "is_active": false,
+    "expiry_date": "2026-12-31",
+    "license_type": "PRO"
+  }
+}
