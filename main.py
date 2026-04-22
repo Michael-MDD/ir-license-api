@@ -5,7 +5,7 @@ import json
 import os
 import secrets
 
-app = FastAPI(title="IR License API", version="1.1.0")
+app = FastAPI(title="IR License API", version="1.2.0")
 
 LICENSE_FILE = "licenses.json"
 
@@ -54,6 +54,14 @@ class DisableLicenseRequest(BaseModel):
     license_key: str
 
 
+class EnableLicenseRequest(BaseModel):
+    license_key: str
+
+
+class DeleteLicenseRequest(BaseModel):
+    license_key: str
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "IR License API"}
@@ -63,6 +71,12 @@ def root():
 def validate_license(req: LicenseValidationRequest):
     licenses = load_licenses()
     key = req.license_key.strip()
+
+    print(
+        f"VALIDATE called: key={key}, "
+        f"plugin={req.plugin_name}, "
+        f"version={req.plugin_version}"
+    )
 
     if key not in licenses:
         return LicenseValidationResponse(
@@ -132,4 +146,42 @@ def disable_license(req: DisableLicenseRequest):
     licenses[key]["is_active"] = False
     save_licenses(licenses)
 
-    return {"message": "License disabled successfully.", "license_key": key}
+    return {
+        "message": "License disabled successfully.",
+        "license_key": key
+    }
+
+
+@app.post("/licenses/enable")
+def enable_license(req: EnableLicenseRequest):
+    licenses = load_licenses()
+    key = req.license_key.strip()
+
+    if key not in licenses:
+        raise HTTPException(status_code=404, detail="License key not found.")
+
+    licenses[key]["is_active"] = True
+    save_licenses(licenses)
+
+    return {
+        "message": "License enabled successfully.",
+        "license_key": key
+    }
+
+
+@app.post("/licenses/delete")
+def delete_license(req: DeleteLicenseRequest):
+    licenses = load_licenses()
+    key = req.license_key.strip()
+
+    if key not in licenses:
+        raise HTTPException(status_code=404, detail="License key not found.")
+
+    del licenses[key]
+    save_licenses(licenses)
+
+    return {
+        "message": "License deleted successfully.",
+        "license_key": key
+    }
+}
