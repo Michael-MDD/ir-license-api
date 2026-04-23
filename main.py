@@ -1,19 +1,28 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 from typing import Optional
 import os
 import secrets
 import psycopg2
 
-app = FastAPI(title="IR License API", version="2.1.0")
+app = FastAPI(title="IR License API", version="2.2.0")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 
 
 def get_connection():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL environment variable is not set.")
     return psycopg2.connect(DATABASE_URL)
+
+
+def require_admin(x_admin_key: Optional[str]):
+    if not ADMIN_API_KEY:
+        raise HTTPException(status_code=500, detail="ADMIN_API_KEY is not configured on server.")
+
+    if not x_admin_key or x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing admin API key.")
 
 
 def init_db():
@@ -30,7 +39,6 @@ def init_db():
         )
     """)
 
-    # If table already exists from older version, make sure "name" column exists
     cur.execute("""
         ALTER TABLE licenses
         ADD COLUMN IF NOT EXISTS name TEXT
@@ -146,7 +154,9 @@ def validate_license(req: LicenseValidationRequest):
 
 
 @app.get("/licenses")
-def list_licenses():
+def list_licenses(x_admin_key: Optional[str] = Header(default=None)):
+    require_admin(x_admin_key)
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -172,7 +182,12 @@ def list_licenses():
 
 
 @app.post("/licenses/create", response_model=CreateLicenseResponse)
-def create_license(req: CreateLicenseRequest):
+def create_license(
+    req: CreateLicenseRequest,
+    x_admin_key: Optional[str] = Header(default=None)
+):
+    require_admin(x_admin_key)
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -208,7 +223,12 @@ def create_license(req: CreateLicenseRequest):
 
 
 @app.post("/licenses/disable")
-def disable_license(req: DisableLicenseRequest):
+def disable_license(
+    req: DisableLicenseRequest,
+    x_admin_key: Optional[str] = Header(default=None)
+):
+    require_admin(x_admin_key)
+
     key = req.license_key.strip()
 
     conn = get_connection()
@@ -237,7 +257,12 @@ def disable_license(req: DisableLicenseRequest):
 
 
 @app.post("/licenses/enable")
-def enable_license(req: EnableLicenseRequest):
+def enable_license(
+    req: EnableLicenseRequest,
+    x_admin_key: Optional[str] = Header(default=None)
+):
+    require_admin(x_admin_key)
+
     key = req.license_key.strip()
 
     conn = get_connection()
@@ -266,7 +291,12 @@ def enable_license(req: EnableLicenseRequest):
 
 
 @app.post("/licenses/delete")
-def delete_license(req: DeleteLicenseRequest):
+def delete_license(
+    req: DeleteLicenseRequest,
+    x_admin_key: Optional[str] = Header(default=None)
+):
+    require_admin(x_admin_key)
+
     key = req.license_key.strip()
 
     conn = get_connection()
