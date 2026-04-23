@@ -5,7 +5,7 @@ import os
 import secrets
 import psycopg2
 
-app = FastAPI(title="IR License API", version="2.0.0")
+app = FastAPI(title="IR License API", version="2.1.0")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -25,8 +25,15 @@ def init_db():
             license_key TEXT PRIMARY KEY,
             is_active BOOLEAN NOT NULL,
             expiry_date TEXT,
-            license_type TEXT
+            license_type TEXT,
+            name TEXT
         )
+    """)
+
+    # If table already exists from older version, make sure "name" column exists
+    cur.execute("""
+        ALTER TABLE licenses
+        ADD COLUMN IF NOT EXISTS name TEXT
     """)
 
     conn.commit()
@@ -45,12 +52,14 @@ class LicenseValidationResponse(BaseModel):
     message: str
     expiry_date: Optional[str] = None
     license_type: Optional[str] = None
+    name: Optional[str] = None
 
 
 class CreateLicenseRequest(BaseModel):
     expiry_date: str
     license_type: str = "PRO"
     is_active: bool = True
+    name: str
 
 
 class CreateLicenseResponse(BaseModel):
@@ -59,6 +68,7 @@ class CreateLicenseResponse(BaseModel):
     expiry_date: str
     license_type: str
     is_active: bool
+    name: str
 
 
 class DisableLicenseRequest(BaseModel):
@@ -96,10 +106,11 @@ def validate_license(req: LicenseValidationRequest):
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        "SELECT is_active, expiry_date, license_type FROM licenses WHERE license_key = %s",
-        (key,)
-    )
+    cur.execute("""
+        SELECT is_active, expiry_date, license_type, name
+        FROM licenses
+        WHERE license_key = %s
+    """, (key,))
     row = cur.fetchone()
 
     cur.close()
@@ -110,24 +121,27 @@ def validate_license(req: LicenseValidationRequest):
             valid=False,
             message="License key not found.",
             expiry_date=None,
-            license_type=None
+            license_type=None,
+            name=None
         )
 
-    is_active, expiry_date, license_type = row
+    is_active, expiry_date, license_type, name = row
 
     if not is_active:
         return LicenseValidationResponse(
             valid=False,
-            message="License is inactive.",
+            message=f"License is inactive. Assigned to: {name}" if name else "License is inactive.",
             expiry_date=expiry_date,
-            license_type=license_type
+            license_type=license_type,
+            name=name
         )
 
     return LicenseValidationResponse(
         valid=True,
-        message="License is valid.",
+        message=f"License is valid. Assigned to: {name}" if name else "License is valid.",
         expiry_date=expiry_date,
-        license_type=license_type
+        license_type=license_type,
+        name=name
     )
 
 
@@ -137,7 +151,7 @@ def list_licenses():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT license_key, is_active, expiry_date, license_type
+        SELECT license_key, is_active, expiry_date, license_type, name
         FROM licenses
         ORDER BY license_key
     """)
@@ -148,6 +162,7 @@ def list_licenses():
 
     return {
         row[0]: {
+            "name": row[4],
             "is_active": row[1],
             "expiry_date": row[2],
             "license_type": row[3]
@@ -168,13 +183,14 @@ def create_license(req: CreateLicenseRequest):
             break
 
     cur.execute("""
-        INSERT INTO licenses (license_key, is_active, expiry_date, license_type)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO licenses (license_key, is_active, expiry_date, license_type, name)
+        VALUES (%s, %s, %s, %s, %s)
     """, (
         key,
         req.is_active,
         req.expiry_date,
-        req.license_type.upper()
+        req.license_type.upper(),
+        req.name
     ))
 
     conn.commit()
@@ -186,7 +202,8 @@ def create_license(req: CreateLicenseRequest):
         message="License created successfully.",
         expiry_date=req.expiry_date,
         license_type=req.license_type.upper(),
-        is_active=req.is_active
+        is_active=req.is_active,
+        name=req.name
     )
 
 
@@ -203,10 +220,11 @@ def disable_license(req: DisableLicenseRequest):
         conn.close()
         raise HTTPException(status_code=404, detail="License key not found.")
 
-    cur.execute(
-        "UPDATE licenses SET is_active = FALSE WHERE license_key = %s",
-        (key,)
-    )
+    cur.execute("""
+        UPDATE licenses
+        SET is_active = FALSE
+        WHERE license_key = %s
+    """, (key,))
 
     conn.commit()
     cur.close()
@@ -231,10 +249,11 @@ def enable_license(req: EnableLicenseRequest):
         conn.close()
         raise HTTPException(status_code=404, detail="License key not found.")
 
-    cur.execute(
-        "UPDATE licenses SET is_active = TRUE WHERE license_key = %s",
-        (key,)
-    )
+    cur.execute("""
+        UPDATE licenses
+        SET is_active = TRUE
+        WHERE license_key = %s
+    """, (key,))
 
     conn.commit()
     cur.close()
@@ -259,10 +278,10 @@ def delete_license(req: DeleteLicenseRequest):
         conn.close()
         raise HTTPException(status_code=404, detail="License key not found.")
 
-    cur.execute(
-        "DELETE FROM licenses WHERE license_key = %s",
-        (key,)
-    )
+    cur.execute("""
+        DELETE FROM licenses
+        WHERE license_key = %s
+    """, (key,))
 
     conn.commit()
     cur.close()
