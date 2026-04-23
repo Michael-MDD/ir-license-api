@@ -1,26 +1,37 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Dict
-import json
+from typing import Optional
 import os
 import secrets
+import psycopg2
 
-app = FastAPI(title="IR License API", version="1.2.0")
+app = FastAPI(title="IR License API", version="2.0.0")
 
-LICENSE_FILE = "licenses.json"
-
-
-def load_licenses() -> Dict[str, dict]:
-    if not os.path.exists(LICENSE_FILE):
-        return {}
-
-    with open(LICENSE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-def save_licenses(data: Dict[str, dict]) -> None:
-    with open(LICENSE_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+def get_connection():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL environment variable is not set.")
+    return psycopg2.connect(DATABASE_URL)
+
+
+def init_db():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS licenses (
+            license_key TEXT PRIMARY KEY,
+            is_active BOOLEAN NOT NULL,
+            expiry_date TEXT,
+            license_type TEXT
+        )
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
 
 class LicenseValidationRequest(BaseModel):
@@ -62,6 +73,11 @@ class DeleteLicenseRequest(BaseModel):
     license_key: str
 
 
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "IR License API"}
@@ -69,7 +85,6 @@ def root():
 
 @app.post("/validate", response_model=LicenseValidationResponse)
 def validate_license(req: LicenseValidationRequest):
-    licenses = load_licenses()
     key = req.license_key.strip()
 
     print(
@@ -78,7 +93,19 @@ def validate_license(req: LicenseValidationRequest):
         f"version={req.plugin_version}"
     )
 
-    if key not in licenses:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT is_active, expiry_date, license_type FROM licenses WHERE license_key = %s",
+        (key,)
+    )
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
         return LicenseValidationResponse(
             valid=False,
             message="License key not found.",
@@ -86,45 +113,73 @@ def validate_license(req: LicenseValidationRequest):
             license_type=None
         )
 
-    record = licenses[key]
+    is_active, expiry_date, license_type = row
 
-    if not record.get("is_active", False):
+    if not is_active:
         return LicenseValidationResponse(
             valid=False,
             message="License is inactive.",
-            expiry_date=record.get("expiry_date"),
-            license_type=record.get("license_type")
+            expiry_date=expiry_date,
+            license_type=license_type
         )
 
     return LicenseValidationResponse(
         valid=True,
         message="License is valid.",
-        expiry_date=record.get("expiry_date"),
-        license_type=record.get("license_type")
+        expiry_date=expiry_date,
+        license_type=license_type
     )
 
 
 @app.get("/licenses")
 def list_licenses():
-    return load_licenses()
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT license_key, is_active, expiry_date, license_type
+        FROM licenses
+        ORDER BY license_key
+    """)
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return {
+        row[0]: {
+            "is_active": row[1],
+            "expiry_date": row[2],
+            "license_type": row[3]
+        }
+        for row in rows
+    }
 
 
 @app.post("/licenses/create", response_model=CreateLicenseResponse)
 def create_license(req: CreateLicenseRequest):
-    licenses = load_licenses()
+    conn = get_connection()
+    cur = conn.cursor()
 
     while True:
         key = "IR-" + secrets.token_hex(8).upper()
-        if key not in licenses:
+        cur.execute("SELECT 1 FROM licenses WHERE license_key = %s", (key,))
+        if not cur.fetchone():
             break
 
-    licenses[key] = {
-        "is_active": req.is_active,
-        "expiry_date": req.expiry_date,
-        "license_type": req.license_type.upper()
-    }
+    cur.execute("""
+        INSERT INTO licenses (license_key, is_active, expiry_date, license_type)
+        VALUES (%s, %s, %s, %s)
+    """, (
+        key,
+        req.is_active,
+        req.expiry_date,
+        req.license_type.upper()
+    ))
 
-    save_licenses(licenses)
+    conn.commit()
+    cur.close()
+    conn.close()
 
     return CreateLicenseResponse(
         license_key=key,
@@ -137,14 +192,25 @@ def create_license(req: CreateLicenseRequest):
 
 @app.post("/licenses/disable")
 def disable_license(req: DisableLicenseRequest):
-    licenses = load_licenses()
     key = req.license_key.strip()
 
-    if key not in licenses:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM licenses WHERE license_key = %s", (key,))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
         raise HTTPException(status_code=404, detail="License key not found.")
 
-    licenses[key]["is_active"] = False
-    save_licenses(licenses)
+    cur.execute(
+        "UPDATE licenses SET is_active = FALSE WHERE license_key = %s",
+        (key,)
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
     return {
         "message": "License disabled successfully.",
@@ -154,14 +220,25 @@ def disable_license(req: DisableLicenseRequest):
 
 @app.post("/licenses/enable")
 def enable_license(req: EnableLicenseRequest):
-    licenses = load_licenses()
     key = req.license_key.strip()
 
-    if key not in licenses:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM licenses WHERE license_key = %s", (key,))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
         raise HTTPException(status_code=404, detail="License key not found.")
 
-    licenses[key]["is_active"] = True
-    save_licenses(licenses)
+    cur.execute(
+        "UPDATE licenses SET is_active = TRUE WHERE license_key = %s",
+        (key,)
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
     return {
         "message": "License enabled successfully.",
@@ -171,14 +248,25 @@ def enable_license(req: EnableLicenseRequest):
 
 @app.post("/licenses/delete")
 def delete_license(req: DeleteLicenseRequest):
-    licenses = load_licenses()
     key = req.license_key.strip()
 
-    if key not in licenses:
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT 1 FROM licenses WHERE license_key = %s", (key,))
+    if not cur.fetchone():
+        cur.close()
+        conn.close()
         raise HTTPException(status_code=404, detail="License key not found.")
 
-    del licenses[key]
-    save_licenses(licenses)
+    cur.execute(
+        "DELETE FROM licenses WHERE license_key = %s",
+        (key,)
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
     return {
         "message": "License deleted successfully.",
